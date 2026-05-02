@@ -21,11 +21,12 @@
   }
   #status {
     position: absolute;
-    top: 8px;
+    top: 6px;
     left: 8px;
     font-size: 11px;
-    opacity: 0.5;
+    opacity: 0.6;
     pointer-events: none;
+    text-shadow: 0 0 3px #000;
   }
 </style>
 </head>
@@ -51,9 +52,40 @@
 
   // ─── Charge l'API IFrame YouTube ───
   let player;
+  let unmuteAttempts = 0;
+  const MAX_UNMUTE_ATTEMPTS = 20;
+
   const tag = document.createElement('script');
   tag.src = "https://www.youtube.com/iframe_api";
   document.head.appendChild(tag);
+
+  // Fallback : un clic n'importe où force un démutage
+  document.addEventListener('click', function () {
+    if (player && player.unMute) {
+      try { player.unMute(); player.setVolume(vol); player.playVideo(); } catch (_) {}
+    }
+  });
+
+  function tryUnmute() {
+    if (!player || !player.unMute) return;
+    try {
+      player.unMute();
+      player.setVolume(vol);
+      // Force play au cas où autoplay aurait été bloqué
+      player.playVideo();
+
+      const muted = player.isMuted ? player.isMuted() : true;
+      if (muted && unmuteAttempts < MAX_UNMUTE_ATTEMPTS) {
+        unmuteAttempts++;
+        setTimeout(tryUnmute, 500);
+        setStatus('Unmute retry #' + unmuteAttempts);
+      } else {
+        setStatus(muted ? '🔇 muted (autoplay bloqué)' : ('▶ ' + videoId + ' vol=' + vol));
+      }
+    } catch (err) {
+      setStatus('unmute err: ' + err);
+    }
+  }
 
   window.onYouTubeIframeAPIReady = function () {
     if (!videoId) return;
@@ -64,6 +96,7 @@
       videoId: videoId,
       playerVars: {
         autoplay:        1,
+        mute:            1,        // ← Démarre muet pour bypasser la policy autoplay
         controls:        0,
         disablekb:       1,
         fs:              0,
@@ -75,19 +108,21 @@
       },
       events: {
         onReady: function (e) {
+          setStatus('Ready, play+unmute…');
           try {
-            e.target.unMute();
-            e.target.setVolume(vol);
             e.target.playVideo();
-            setStatus('▶ ' + videoId);
-          } catch (err) { setStatus('onReady err: ' + err); }
+          } catch (_) {}
+          setTimeout(tryUnmute, 250);
         },
         onError: function (e) {
-          // Codes : 2=invalid, 5=html5, 100=removed, 101/150=embed-disabled, 153=origin
-          setStatus('Erreur YT : ' + e.data);
+          setStatus('YT error: ' + e.data);
         },
         onStateChange: function (e) {
-          // -1=unstarted, 0=ended, 1=playing, 2=paused, 3=buffering, 5=cued
+          // 1=playing, 2=paused, 3=buffering, 5=cued, 0=ended, -1=unstarted
+          if (e.data === YT.PlayerState.PLAYING) {
+            // Une fois en lecture, on tente le démutage en boucle
+            if (player.isMuted && player.isMuted()) tryUnmute();
+          }
           if (e.data === YT.PlayerState.UNSTARTED || e.data === YT.PlayerState.CUED) {
             try { e.target.playVideo(); } catch (_) {}
           }
